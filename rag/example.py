@@ -9,9 +9,15 @@ def main():
     rag = RAGHandler(persist_directory="./chroma_db")
     
     # Add documents to the vector store
-    # Assuming you have some text documents in a 'documents' directory
-    if os.path.exists("documents"):
-        rag.add_documents("documents")
+    document_path = "/rag/documents"
+    if os.path.exists(document_path):
+        try:
+            rag.add_documents(document_path)
+            print(f"Successfully added documents from {document_path}")
+        except Exception as e:
+            print(f"Error adding documents: {str(e)}")
+    else:
+        print(f"Directory not found: {document_path}")
     
     # Initialize your model (using your existing infrastructure)
     base_args = BaseModelArgs()  # Base LLaMA arguments

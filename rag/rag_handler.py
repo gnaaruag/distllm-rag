@@ -1,10 +1,13 @@
-from typing import List, Dict, Any
+import math
 import os
+from typing import Any, Dict, List
+
 import chromadb
 from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from langchain_community.document_loaders import DirectoryLoader, PyPDFLoader
+from sentence_transformers import SentenceTransformer
+
 
 class RAGHandler:
     def __init__(self, persist_directory: str = "chroma_db"):
@@ -32,10 +35,36 @@ class RAGHandler:
             chunk_overlap=50
         )
 
+    def add_single_document(self, file_path: str) -> str:
+        """Add a single document and return its ID."""
+        loader = PyPDFLoader(file_path)
+        document = loader.load()
+        
+        # Split document
+        texts = self.text_splitter.split_documents(document)
+        
+        # Generate a unique document ID
+        document_id = str(math.random())
+        
+        # Create embeddings and add to ChromaDB
+        for i, doc in enumerate(texts):
+            embedding = self.embedding_model.encode(doc.page_content).tolist()
+            self.collection.add(
+                documents=[doc.page_content],
+                embeddings=[embedding],
+                ids=[f"{document_id}_{i}"],
+                metadatas=[{
+                    "source": doc.metadata.get("source", ""),
+                    "document_id": document_id
+                }]
+            )
+        
+        return document_id
+
     def add_documents(self, documents_dir: str) -> None:
         """Add documents from a directory to the vector store."""
         # Load documents
-        loader = DirectoryLoader(documents_dir, glob="**/*.txt", loader_cls=TextLoader)
+        loader = DirectoryLoader(documents_dir, glob="**/*.pdf", loader_cls=PyPDFLoader)
         documents = loader.load()
         
         # Split documents

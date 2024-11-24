@@ -4,18 +4,20 @@ document.addEventListener("alpine:init", () => {
     cstate: {
       time: null,
       messages: [],
-      selectedModel: 'llama-3.2-1b',
-    },   
-    
+      selectedModel: "llama-3.2-1b",
+    },
+
     documents: [], // Store uploaded documents
-    systemPrompt: "",
+    systemPrompt:
+      "The user's name is Punarv. Always remember this context throughout the conversation.",
 
     // historical state
     histories: JSON.parse(localStorage.getItem("histories")) || [],
 
     home: 0,
     generating: false,
-    endpoint: `${window.location.origin}/v1`,
+    endpoint: `http://localhost:52415/v1`,
+    serverEndpoint: "http://localhost:8000",
     errorMessage: null,
     errorExpanded: false,
     errorTimeout: null,
@@ -30,16 +32,13 @@ document.addEventListener("alpine:init", () => {
 
     // download progress
     downloadProgress: null,
-    downloadProgressInterval: null, // To keep track of the polling interval
+    downloadProgressInterval: null,
 
     // Pending message storage
     pendingMessage: null,
 
     init() {
-      // Clean up any pending messages
       localStorage.removeItem("pendingMessage");
-
-      // Start polling for download progress
       this.startDownloadProgressPolling();
     },
 
@@ -58,17 +57,17 @@ document.addEventListener("alpine:init", () => {
       localStorage.setItem("histories", JSON.stringify([]));
     },
 
-    // Utility functions
     formatBytes(bytes) {
-      if (bytes === 0) return '0 B';
+      if (bytes === 0) return "0 B";
       const k = 1024;
-      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const sizes = ["B", "KB", "MB", "GB", "TB"];
       const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
     },
 
     formatDuration(seconds) {
-      if (seconds === null || seconds === undefined || isNaN(seconds)) return '';
+      if (seconds === null || seconds === undefined || isNaN(seconds))
+        return "";
       const h = Math.floor(seconds / 3600);
       const m = Math.floor((seconds % 3600) / 60);
       const s = Math.floor(seconds % 60);
@@ -80,18 +79,17 @@ document.addEventListener("alpine:init", () => {
     async populateSelector() {
       try {
         const response = await fetch(`${window.location.origin}/modelpool`);
-        const responseText = await response.text(); // Get raw response text first
-        
+        const responseText = await response.text();
+
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
-        
-        // Try to parse the response text
+
         let responseJson;
         try {
           responseJson = JSON.parse(responseText);
         } catch (parseError) {
-          console.error('Failed to parse JSON:', parseError);
+          console.error("Failed to parse JSON:", parseError);
           throw new Error(`Invalid JSON response: ${responseText}`);
         }
 
@@ -100,9 +98,8 @@ document.addEventListener("alpine:init", () => {
           throw new Error("Could not find model selector element");
         }
 
-        // Clear the current options and add new ones
-        sel.innerHTML = '';
-          
+        sel.innerHTML = "";
+
         const modelDict = responseJson["model pool"];
         if (!modelDict) {
           throw new Error("Response missing 'model pool' property");
@@ -115,7 +112,6 @@ document.addEventListener("alpine:init", () => {
           sel.appendChild(opt);
         });
 
-        // Set initial value to the first model
         const firstKey = Object.keys(modelDict)[0];
         if (firstKey) {
           sel.value = firstKey;
@@ -133,8 +129,7 @@ document.addEventListener("alpine:init", () => {
         const reader = new FileReader();
         reader.onload = (e) => {
           this.imagePreview = e.target.result;
-          this.imageUrl = e.target.result; // Store the image URL
-          // Add image preview to the chat
+          this.imageUrl = e.target.result;
           this.cstate.messages.push({
             role: "user",
             content: `![Uploaded Image](${this.imagePreview})`,
@@ -147,45 +142,42 @@ document.addEventListener("alpine:init", () => {
     async handleDocumentUpload(event) {
       const file = event.target.files[0];
       if (file) {
-        const reader = new FileReader();
-        reader.onload = async (e) => {
-          const content = e.target.result;
-          
-          // Store document
+        try {
+          const formData = new FormData();
+          formData.append("file", file);
+
+          // Send file to backend for processing
+          const response = await fetch(`${this.serverEndpoint}/upload`, {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!response.ok) {
+            throw new Error(`Upload failed: ${response.statusText}`);
+          }
+
+          const result = await response.json();
+
+          // Store document reference
           this.documents.push({
             name: file.name,
-            content: content
+            id: result.document_id,
           });
-  
-          // Update system prompt with new document
-          await this.updateSystemPrompt();
-  
+
           // Add confirmation message to chat
           this.cstate.messages.push({
             role: "system",
-            content: `Added document: ${file.name} to the knowledge base.`
+            content: `Added document: ${file.name} to the knowledge base. Document has been processed and indexed.`,
           });
-        };
-        reader.readAsText(file); // Read as text instead of DataURL
+        } catch (error) {
+          console.error("Error uploading document:", error);
+          this.cstate.messages.push({
+            role: "system",
+            content: `Error adding document: ${file.name}. ${error.message}`,
+          });
+        }
       }
     },
-
-    async updateSystemPrompt() {
-      // Combine base prompt with document contexts
-      let newPrompt = "The user's name is Punarv. Always remember this context throughout the conversation.\n\n";
-      
-      if (this.documents.length > 0) {
-        newPrompt += "Here are the documents you should use as context when answering questions:\n\n";
-        
-        this.documents.forEach((doc, index) => {
-          newPrompt += `Document ${index + 1} - ${doc.name}:\n${doc.content}\n\n`;
-        });
-  
-        newPrompt += "Please use this context to provide accurate answers to questions. If the answer isn't in the context, say so.";
-      }
-  
-      this.systemPrompt = newPrompt;
-    },  
 
     async handleSend() {
       try {
@@ -197,132 +189,110 @@ document.addEventListener("alpine:init", () => {
         this.generating = true;
         if (this.home === 0) this.home = 1;
 
-        // ensure that going back in history will go back to home
         window.history.pushState({}, "", "/");
 
-        // add message to list
         if (value) {
-          console.log("Whatups bestie")
           this.cstate.messages.push({ role: "user", content: value });
         }
 
-        // clear textarea
         el.value = "";
         el.style.height = "auto";
         el.style.height = el.scrollHeight + "px";
 
         localStorage.setItem("pendingMessage", value);
-        this.processMessage(value);
+        await this.processMessage(value);
       } catch (error) {
-        console.error('error', error);
+        console.error("error", error);
         const errorDetails = {
-            message: error.message || 'Unknown error',
-            stack: error.stack,
-            name: error.name || 'Error'
+          message: error.message || "Unknown error",
+          stack: error.stack,
+          name: error.name || "Error",
         };
-        
+
         this.errorMessage = {
-            basic: `${errorDetails.name}: ${errorDetails.message}`,
-            stack: errorDetails.stack
+          basic: `${errorDetails.name}: ${errorDetails.message}`,
+          stack: errorDetails.stack,
         };
 
-        // Clear any existing timeout
         if (this.errorTimeout) {
-            clearTimeout(this.errorTimeout);
+          clearTimeout(this.errorTimeout);
         }
 
-        // Only set the timeout if the error details aren't expanded
         if (!this.errorExpanded) {
-            this.errorTimeout = setTimeout(() => {
-                this.errorMessage = null;
-                this.errorExpanded = false;
-            }, 30 * 1000);
+          this.errorTimeout = setTimeout(() => {
+            this.errorMessage = null;
+            this.errorExpanded = false;
+          }, 30 * 1000);
         }
+      } finally {
         this.generating = false;
       }
     },
 
     async processMessage(value) {
       try {
-        // reset performance tracking
         const prefill_start = Date.now();
         let start_time = 0;
         let tokens = 0;
         this.tokens_per_second = 0;
 
-        // prepare messages for API request
+        // Get augmented context from RAG if documents exist
+        let augmentedContext = "";
+        if (this.documents.length > 0) {
+          try {
+            const ragResponse = await fetch(
+              `${this.serverEndpoint}/rag/query`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  query: value,
+                  document_ids: this.documents.map((doc) => doc.id),
+                }),
+              }
+            );
+
+            if (!ragResponse.ok) {
+              throw new Error(`RAG query failed: ${ragResponse.statusText}`);
+            }
+
+            const ragResult = await ragResponse.json();
+            augmentedContext = ragResult.context;
+          } catch (error) {
+            console.error("Error getting RAG context:", error);
+          }
+        }
+
+        // Prepare messages for API request
+        let systemPrompt = this.systemPrompt;
+        if (augmentedContext) {
+          systemPrompt += `\n\nRelevant context for the current question:\n${augmentedContext}\n\nPlease use this context to help answer the user's questions.`;
+        }
+
         let apiMessages = [
           {
             role: "system",
-            content: this.systemPrompt
-          }
+            content: systemPrompt,
+          },
+          ...this.cstate.messages,
         ];
-        apiMessages = [
-          ...apiMessages,
-          ...this.cstate.messages.map(msg => {
-            return {
-              role: msg.role,
-              content: msg.content
-            }
-          })]
-      //   apiMessages = apiMessages.concat(this.cstate.messages.map(msg => {
-      //     if (msg.content.startsWith('![Uploaded Image]')) {
-      //         return {
-      //             role: "user",
-      //             content: [
-      //                 {
-      //                     type: "image_url",
-      //                     image_url: {
-      //                         url: this.imageUrl
-      //                     }
-      //                 },
-      //                 {
-      //                     type: "text",
-      //                     text: value
-      //                 }
-      //             ]
-      //         };
-      //     } else {
-      //         return {
-      //             role: msg.role,
-      //             content: msg.content
-      //         };
-      //     }
-      // }));
-        const containsImage = apiMessages.some(msg => Array.isArray(msg.content) && msg.content.some(item => item.type === 'image_url'));
-        if (containsImage) {
-          // Map all messages with string content to object with type text
-          apiMessages = apiMessages.map(msg => {
-            if (typeof msg.content === 'string') {
-              return {
-                ...msg,
-                content: [
-                  {
-                    type: "text",
-                    text: msg.content
-                  }
-                ]
-              };
-            }
-            return msg;
-          });
-        }
 
-
-        // start receiving server sent events
+        // Stream the response
         let gottenFirstChunk = false;
-        for await (
-          const chunk of this.openaiChatCompletion(this.cstate.selectedModel, apiMessages)
-        ) {
+        for await (const chunk of this.openaiChatCompletion(
+          this.cstate.selectedModel,
+          apiMessages
+        )) {
           if (!gottenFirstChunk) {
             this.cstate.messages.push({ role: "assistant", content: "" });
             gottenFirstChunk = true;
           }
 
-          // add chunk to the last message
-          this.cstate.messages[this.cstate.messages.length - 1].content += chunk;
+          this.cstate.messages[this.cstate.messages.length - 1].content +=
+            chunk;
 
-          // calculate performance tracking
           tokens += 1;
           this.total_tokens += 1;
           if (start_time === 0) {
@@ -336,69 +306,45 @@ document.addEventListener("alpine:init", () => {
           }
         }
 
-        // Clean the cstate before adding it to histories
+        // Update history
         const cleanedCstate = JSON.parse(JSON.stringify(this.cstate));
-        cleanedCstate.messages = cleanedCstate.messages.map(msg => {
+        cleanedCstate.messages = cleanedCstate.messages.map((msg) => {
           if (Array.isArray(msg.content)) {
             return {
               ...msg,
-              content: msg.content.map(item =>
-                item.type === 'image_url' ? { type: 'image_url', image_url: { url: '[IMAGE_PLACEHOLDER]' } } : item
-              )
+              content: msg.content.map((item) =>
+                item.type === "image_url"
+                  ? {
+                      type: "image_url",
+                      image_url: { url: "[IMAGE_PLACEHOLDER]" },
+                    }
+                  : item
+              ),
             };
           }
           return msg;
         });
 
         // Update the state in histories or add it if it doesn't exist
-        const index = this.histories.findIndex((cstate) => cstate.time === cleanedCstate.time);
+        const index = this.histories.findIndex(
+          (cstate) => cstate.time === cleanedCstate.time
+        );
         cleanedCstate.time = Date.now();
         if (index !== -1) {
-          // Update the existing entry
           this.histories[index] = cleanedCstate;
         } else {
-          // Add a new entry
           this.histories.push(cleanedCstate);
         }
-        console.log(this.histories)
-        // update in local storage
-        try {
-          localStorage.setItem("histories", JSON.stringify(this.histories));
-        } catch (error) {
-          console.error("Failed to save histories to localStorage:", error);
-        }
+
+        localStorage.setItem("histories", JSON.stringify(this.histories));
       } catch (error) {
-        console.error('error', error);
-        const errorDetails = {
-            message: error.message || 'Unknown error',
-            stack: error.stack,
-            name: error.name || 'Error'
-        };
-        
-        this.errorMessage = {
-            basic: `${errorDetails.name}: ${errorDetails.message}`,
-            stack: errorDetails.stack
-        };
-
-        // Clear any existing timeout
-        if (this.errorTimeout) {
-            clearTimeout(this.errorTimeout);
-        }
-
-        // Only set the timeout if the error details aren't expanded
-        if (!this.errorExpanded) {
-            this.errorTimeout = setTimeout(() => {
-                this.errorMessage = null;
-                this.errorExpanded = false;
-            }, 30 * 1000);
-        }
-      } finally {
-        this.generating = false;
+        console.error("Error:", error);
+        this.errorMessage = `Error: ${error.message}`;
+        throw error;
       }
     },
 
     async handleEnter(event) {
-      // if shift is not pressed
       if (!event.shiftKey) {
         event.preventDefault();
         await this.handleSend();
@@ -410,48 +356,53 @@ document.addEventListener("alpine:init", () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages }),
-      }).then((response) => response.json()).then((data) => {
-        this.total_tokens = data.length;
-      }).catch(console.error);
+      })
+        .then((response) => response.json())
+        .then((data) => {
+          this.total_tokens = data.length;
+        })
+        .catch(console.error);
     },
 
     async *openaiChatCompletion(model, messages) {
-      // stream response
-      console.log("model", model)
+      console.log("model", model);
       const response = await fetch(`${this.endpoint}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          "model": model,
-          "messages": messages,
-          "stream": true,
+          model: model,
+          messages: messages,
+          stream: true,
         }),
       });
+
       if (!response.ok) {
-        const errorResBody = await response.json()
+        const errorResBody = await response.json();
         if (errorResBody?.detail) {
-          throw new Error(`Failed to fetch completions: ${errorResBody.detail}`);
+          throw new Error(
+            `Failed to fetch completions: ${errorResBody.detail}`
+          );
         } else {
           throw new Error("Failed to fetch completions: Unknown error");
         }
       }
 
-      const reader = response.body.pipeThrough(new TextDecoderStream())
-        .pipeThrough(new EventSourceParserStream()).getReader();
+      const reader = response.body
+        .pipeThrough(new TextDecoderStream())
+        .pipeThrough(new EventSourceParserStream())
+        .getReader();
+
       while (true) {
         const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
+        if (done) break;
+
         if (value.type === "event") {
           const json = JSON.parse(value.data);
           if (json.choices) {
             const choice = json.choices[0];
-            if (choice.finish_reason === "stop") {
-              break;
-            }
+            if (choice.finish_reason === "stop") break;
             yield choice.delta.content;
           }
         }
@@ -465,40 +416,48 @@ document.addEventListener("alpine:init", () => {
           const data = await response.json();
           const progressArray = Object.values(data);
           if (progressArray.length > 0) {
-            this.downloadProgress = progressArray.map(progress => {
-              // Check if download is complete
+            this.downloadProgress = progressArray.map((progress) => {
               if (progress.status === "complete") {
                 return {
                   ...progress,
                   isComplete: true,
-                  percentage: 100
+                  percentage: 100,
                 };
               } else if (progress.status === "failed") {
                 return {
                   ...progress,
                   isComplete: false,
-                  errorMessage: "Download failed"
+                  errorMessage: "Download failed",
                 };
               } else {
                 return {
                   ...progress,
                   isComplete: false,
-                  downloaded_bytes_display: this.formatBytes(progress.downloaded_bytes),
+                  downloaded_bytes_display: this.formatBytes(
+                    progress.downloaded_bytes
+                  ),
                   total_bytes_display: this.formatBytes(progress.total_bytes),
-                  overall_speed_display: progress.overall_speed ? this.formatBytes(progress.overall_speed) + '/s' : '',
-                  overall_eta_display: progress.overall_eta ? this.formatDuration(progress.overall_eta) : '',
-                  percentage: ((progress.downloaded_bytes / progress.total_bytes) * 100).toFixed(2)
+                  overall_speed_display: progress.overall_speed
+                    ? this.formatBytes(progress.overall_speed) + "/s"
+                    : "",
+                  overall_eta_display: progress.overall_eta
+                    ? this.formatDuration(progress.overall_eta)
+                    : "",
+                  percentage: (
+                    (progress.downloaded_bytes / progress.total_bytes) *
+                    100
+                  ).toFixed(2),
                 };
               }
             });
-            const allComplete = this.downloadProgress.every(progress => progress.isComplete);
+
+            const allComplete = this.downloadProgress.every(
+              (progress) => progress.isComplete
+            );
             if (allComplete) {
-              // Check for pendingMessage
               const savedMessage = localStorage.getItem("pendingMessage");
               if (savedMessage) {
-                // Clear pendingMessage
                 localStorage.removeItem("pendingMessage");
-                // Call processMessage() with savedMessage
                 if (this.lastErrorMessage) {
                   await this.processMessage(savedMessage);
                 }
@@ -507,7 +466,6 @@ document.addEventListener("alpine:init", () => {
               this.downloadProgress = null;
             }
           } else {
-            // No ongoing download
             this.downloadProgress = null;
           }
         }
@@ -518,28 +476,27 @@ document.addEventListener("alpine:init", () => {
     },
 
     startDownloadProgressPolling() {
-      if (this.downloadProgressInterval) {
-        // Already polling
-        return;
-      }
-      this.fetchDownloadProgress(); // Fetch immediately
+      if (this.downloadProgressInterval) return;
+
+      this.fetchDownloadProgress();
       this.downloadProgressInterval = setInterval(() => {
         this.fetchDownloadProgress();
-      }, 1000); // Poll every second
+      }, 1000);
     },
   }));
 });
 
 const { markedHighlight } = globalThis.markedHighlight;
-marked.use(markedHighlight({
-  langPrefix: "hljs language-",
-  highlight(code, lang, _info) {
-    const language = hljs.getLanguage(lang) ? lang : "plaintext";
-    return hljs.highlight(code, { language }).value;
-  },
-}));
+marked.use(
+  markedHighlight({
+    langPrefix: "hljs language-",
+    highlight(code, lang, _info) {
+      const language = hljs.getLanguage(lang) ? lang : "plaintext";
+      return hljs.highlight(code, { language }).value;
+    },
+  })
+);
 
-// **** eventsource-parser ****
 class EventSourceParserStream extends TransformStream {
   constructor() {
     let parser;
@@ -640,8 +597,7 @@ function createParser(onParse) {
           type: "event",
           id: eventId,
           event: eventName || void 0,
-          data: data.slice(0, -1),
-          // remove trailing newline
+          data: data.slice(0, -1), // remove trailing newline
         });
 
         data = "";
@@ -653,7 +609,7 @@ function createParser(onParse) {
     const noValue = fieldLength < 0;
     const field = lineBuffer.slice(
       index,
-      index + (noValue ? lineLength : fieldLength),
+      index + (noValue ? lineLength : fieldLength)
     );
     let step = 0;
     if (noValue) {
